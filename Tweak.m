@@ -541,22 +541,51 @@ static void MGHideButton(void) {
 #pragma mark - hooks
 
 static IMP origAppear = NULL, origDisappear = NULL;
+static NSTimer *gTimer = nil;
+
+// Экран настроек реально виден: он в окне, на экране и ничего не перекрывает центр.
+static BOOL MGSettingsVisible(void) {
+    UIViewController *vc = gSettingsVC;
+    if (!vc) return NO;
+    UIView *v = vc.viewIfLoaded;
+    UIWindow *w = v.window;
+    if (!w || v.hidden || v.alpha < 0.05) return NO;
+    CGRect r = [v convertRect:v.bounds toView:w];
+    CGRect inter = CGRectIntersection(r, w.bounds);
+    if (CGRectIsNull(inter)) return NO;
+    if (inter.size.width < w.bounds.size.width * 0.6 || inter.size.height < w.bounds.size.height * 0.4) return NO;
+    // проверка перекрытия: что лежит в центре экрана — часть экрана настроек?
+    CGPoint c = CGPointMake(CGRectGetMidX(inter), CGRectGetMidY(inter));
+    UIView *hit = [w hitTest:c withEvent:nil];
+    if (!hit) return NO;
+    return [hit isDescendantOfView:v];
+}
+
+static void MGTick(void) {
+    BOOL vis = MGSettingsVisible();
+    if (vis && !gBtn && gSettingsVC) MGShowButton(gSettingsVC);
+    else if (!vis && gBtn) MGHideButton();
+}
+
+static void MGStartTimer(void) {
+    if (gTimer) return;
+    gTimer = [[NSTimer scheduledTimerWithTimeInterval:0.3 repeats:YES block:^(NSTimer *t) { MGTick(); }] retain];
+}
 
 static void new_appear(id self, SEL _cmd, BOOL animated) {
     ((void (*)(id, SEL, BOOL))origAppear)(self, _cmd, animated);
-    gSettingsVC = (UIViewController *)self;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (gSettingsVC == (UIViewController *)self) MGShowButton((UIViewController *)self);
-    });
+    UIViewController *vc = (UIViewController *)self;
+    if (gSettingsVC != vc) {
+        [gSettingsVC release];
+        gSettingsVC = [vc retain];
+    }
+    MGStartTimer();
+    dispatch_async(dispatch_get_main_queue(), ^{ MGTick(); });
 }
 
 static void new_disappear(id self, SEL _cmd, BOOL animated) {
     ((void (*)(id, SEL, BOOL))origDisappear)(self, _cmd, animated);
-    UIViewController *vc = (UIViewController *)self;
-    if (![vc.presentedViewController isKindOfClass:[MGSheetVC class]]) {
-        if (gSettingsVC == vc) gSettingsVC = nil;
-        MGHideButton();
-    }
+    dispatch_async(dispatch_get_main_queue(), ^{ MGTick(); });
 }
 
 static void MGHook(Class cls, SEL sel, IMP imp, IMP *orig) {
